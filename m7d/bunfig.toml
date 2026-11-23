@@ -1,0 +1,3 @@
+[serve.static]
+# Tailwind + Lightning CSS lowering for the TV browser (Chrome 108), see src/build/tailwind-tv.ts
+plugins = ["./src/build/tailwind-tv.ts"]

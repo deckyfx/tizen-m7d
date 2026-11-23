@@ -1,0 +1,15 @@
+# Reference clones and large binaries (re-fetchable)
+references/
+tools/apps2samsung/apps2samsung-cli
+backup/
+
+# Secrets / runtime state
+.env
+*.token
+.token
+.data/
+
+# Build output
+node_modules/
+dist/
+*.log

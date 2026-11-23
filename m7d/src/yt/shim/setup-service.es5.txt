@@ -1,0 +1,242 @@
+/*
+ * m7d YouTube shim: one-shot setup service (runs on the TV, started by m7d with `0 execute`).
+ *
+ * 1. Copies Samsung's Cobalt content into our own --content folder, again whenever the source
+ *    changed (YouTube/firmware update), via a .new folder swapped in place.
+ * 2. Installs m7d's CA *public* certificate as ssl/certs/<subject hash>.<n> so Cobalt trusts
+ *    the homelab proxy's YouTube certificates.
+ * 3. Deletes leftovers of the old TizenTube setup (CONFIG.cleanup, only under /home/owner/share/).
+ * 4. POSTs a report to m7d and exits. It opens no ports.
+ *
+ * Plain ES5 and core modules only: the TV's service runtime is an old Node.
+ * m7d replaces the CONFIG line below when it builds the package.
+ */
+"use strict";
+
+var CONFIG = /*@M7D_CONFIG@*/ null;
+
+var fs = require("fs");
+var path = require("path");
+var http = require("http");
+
+var started = Date.now();
+
+/** True when `p` exists. */
+function exists(p) {
+  try {
+    fs.statSync(p);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/** mkdir -p */
+function mkdirp(dir) {
+  if (exists(dir)) return;
+  mkdirp(path.dirname(dir));
+  fs.mkdirSync(dir);
+}
+
+/** rm -rf */
+function removeTree(p) {
+  var stat;
+  try {
+    stat = fs.lstatSync(p);
+  } catch (e) {
+    return;
+  }
+  if (stat.isDirectory()) {
+    fs.readdirSync(p).forEach(function (name) {
+      removeTree(path.join(p, name));
+    });
+    fs.rmdirSync(p);
+  } else {
+    fs.unlinkSync(p);
+  }
+}
+
+/** Walks `dir`; calls visit(relativePath, stat) for every file. */
+function walk(dir, visit, prefix) {
+  fs.readdirSync(dir).sort().forEach(function (name) {
+    var full = path.join(dir, name);
+    var rel = prefix ? prefix + "/" + name : name;
+    var stat = fs.statSync(full);
+    if (stat.isDirectory()) walk(full, visit, rel);
+    else visit(rel, stat);
+  });
+}
+
+/** Fingerprint of a tree (paths, sizes, mtimes) plus file count and bytes. */
+function fingerprint(dir) {
+  var hash = 5381;
+  var files = 0;
+  var bytes = 0;
+  walk(dir, function (rel, stat) {
+    var line = rel + ":" + stat.size + ":" + stat.mtime.getTime() + "\n";
+    for (var i = 0; i < line.length; i++) hash = ((hash * 33) ^ line.charCodeAt(i)) >>> 0;
+    files += 1;
+    bytes += stat.size;
+  });
+  return { value: hash.toString(16) + "-" + files + "-" + bytes, files: files, bytes: bytes };
+}
+
+/** cp -r (files are read and written whole; Cobalt content files are small). */
+function copyTree(src, dest) {
+  mkdirp(dest);
+  fs.readdirSync(src).forEach(function (name) {
+    var from = path.join(src, name);
+    var to = path.join(dest, name);
+    if (fs.statSync(from).isDirectory()) copyTree(from, to);
+    else fs.writeFileSync(to, fs.readFileSync(from));
+  });
+}
+
+/** Reads a small text file, or null. */
+function readText(p) {
+  try {
+    return fs.readFileSync(p, "utf8");
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Makes CONFIG.contentDir a current copy of the Cobalt content. Returns what it did. */
+function syncContent(report) {
+  var source = null;
+  for (var i = 0; i < CONFIG.cobaltSources.length; i++) {
+    if (exists(CONFIG.cobaltSources[i])) {
+      source = CONFIG.cobaltSources[i];
+      break;
+    }
+  }
+  if (!source) throw new Error("Cobalt content not found in " + CONFIG.cobaltSources.join(", "));
+  report.source = source;
+
+  var print = fingerprint(source);
+  report.files = print.files;
+  report.bytes = print.bytes;
+  var marker = path.join(CONFIG.contentDir, ".m7d-source");
+  var wanted = source + "\n" + print.value;
+  if (readText(marker) === wanted) {
+    report.content = "current";
+    return;
+  }
+
+  var fresh = CONFIG.contentDir + ".new";
+  var old = CONFIG.contentDir + ".old";
+  removeTree(fresh);
+  removeTree(old);
+  copyTree(source, fresh);
+  fs.writeFileSync(path.join(fresh, ".m7d-source"), wanted);
+  if (exists(CONFIG.contentDir)) fs.renameSync(CONFIG.contentDir, old);
+  fs.renameSync(fresh, CONFIG.contentDir);
+  removeTree(old);
+  report.content = "copied";
+}
+
+/** Writes the CA as <hash>.<n> (first free slot, or the slot that already holds it). */
+function installCa(report) {
+  var dir = path.join(CONFIG.contentDir, "ssl", "certs");
+  mkdirp(dir);
+  report.certFiles = [];
+  CONFIG.caHashes.forEach(function (hash) {
+    for (var slot = 0; slot < 10; slot++) {
+      var file = path.join(dir, hash + "." + slot);
+      var current = readText(file);
+      if (current === CONFIG.caPem) {
+        report.certFiles.push(hash + "." + slot + " (present)");
+        return;
+      }
+      if (current === null) {
+        fs.writeFileSync(file, CONFIG.caPem);
+        report.certFiles.push(hash + "." + slot + " (written)");
+        return;
+      }
+    }
+    throw new Error("No free certificate slot for " + hash);
+  });
+}
+
+/** POSTs the report to m7d, then calls done (never throws). */
+function sendReport(report, done) {
+  var body = JSON.stringify(report);
+  var finished = false;
+  function finish() {
+    if (finished) return;
+    finished = true;
+    done();
+  }
+  try {
+    var request = http.request(
+      {
+        host: CONFIG.reportHost,
+        port: CONFIG.reportPort,
+        path: CONFIG.reportPath,
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+      },
+      function (response) {
+        response.resume();
+        response.on("end", finish);
+      }
+    );
+    request.on("error", finish);
+    request.setTimeout(10000, function () {
+      request.abort();
+      finish();
+    });
+    request.end(body);
+  } catch (e) {
+    finish();
+  }
+}
+
+/** Exits the service (outside the TV, i.e. in tests, the process just ends). */
+function exitService() {
+  try {
+    if (typeof tizen !== "undefined") tizen.application.getCurrentApplication().exit();
+  } catch (e) {
+    /* already exiting */
+  }
+}
+
+/** Deletes the configured leftovers; never touches anything outside /home/owner/share/ or our folder. */
+function cleanup(report) {
+  report.removed = [];
+  (CONFIG.cleanup || []).forEach(function (target) {
+    var resolved = path.resolve(target);
+    if (resolved.indexOf("/home/owner/share/") !== 0 || resolved === "/home/owner/share/") return;
+    if (resolved === CONFIG.contentDir || CONFIG.contentDir.indexOf(resolved + "/") === 0) return;
+    if (!exists(resolved)) return;
+    removeTree(resolved);
+    report.removed.push(resolved);
+  });
+}
+
+function run() {
+  var report = {
+    ok: false,
+    shimVersion: CONFIG.shimVersion,
+    node: process.version,
+    contentDir: CONFIG.contentDir,
+  };
+  try {
+    syncContent(report);
+    installCa(report);
+    cleanup(report);
+    report.ok = true;
+  } catch (e) {
+    report.error = String((e && e.message) || e);
+  }
+  report.durationMs = Date.now() - started;
+  sendReport(report, exitService);
+}
+
+module.exports = {
+  onStart: function () {},
+  onRequest: function () {},
+  onExit: function () {},
+};
+
+if (CONFIG) run();

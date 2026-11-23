@@ -1,0 +1,30 @@
+# tizen-m7d on the always-on box (paste into anpan-os "New Stack", or `docker compose up -d`).
+#
+# Host networking is required: m7d recognises the TV by its source IP, the TV connects back to
+# this box (YouTube proxy :8101, setup reports :8787), and Apps2Samsung's sign-in returns to a
+# local port. Both folders must be writable by UID 1000 (the container user).
+services:
+  tizen-m7d:
+    image: deckyfx/tizen-m7d:latest
+    container_name: tizen-m7d
+    restart: unless-stopped
+    network_mode: host
+    init: true
+    environment:
+      # Dashboard/API token, at least 16 characters.
+      M7D_TOKEN: ${M7D_TOKEN:?set M7D_TOKEN}
+      # Defaults only: both IPs can be changed in the dashboard (Settings → TV connection).
+      TV_HOST: ${TV_HOST:-}
+      HOMELAB_IP: ${HOMELAB_IP:-}
+      # Hand the token to the TV's own browser (no typing with the remote).
+      TRUST_TV_IP: "true"
+      # Who may use the YouTube proxy besides the TV.
+      YT_PROXY_ALLOW: 127.0.0.1
+      # SERVER_PORT: 8787
+      # YT_PROXY_PORT: 8101
+    volumes:
+      # CA the TV trusts, remote pairing token, settings, app lists. Keep it: a new CA means
+      # running YouTube m7d's setup again.
+      - ${M7D_DATA:-./data}:/data
+      # Apps2Samsung signing certificates and settings (~/.config/Apps2Samsung on a desktop).
+      - ${A2S_CONFIG:-./apps2samsung}:/home/m7d/.config/Apps2Samsung
