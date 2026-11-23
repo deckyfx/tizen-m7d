@@ -2,7 +2,8 @@
 #
 # Host networking is required: m7d recognises the TV by its source IP, the TV connects back to
 # this box (YouTube proxy :8101, setup reports :8787), and Apps2Samsung's sign-in returns to a
-# local port. Both folders must be writable by UID 1000 (the container user).
+# local port. The container gives both folders to UID 1000 (PUID/PGID) and runs m7d as that user.
+# When moving an existing install, copy its data folder in first (it holds the CA the TV trusts).
 services:
   tizen-m7d:
     image: deckyfx/tizen-m7d:latest
@@ -20,6 +21,8 @@ services:
       TRUST_TV_IP: "true"
       # Who may use the YouTube proxy besides the TV.
       YT_PROXY_ALLOW: 127.0.0.1
+      # PUID: 1000
+      # PGID: 1000
       # SERVER_PORT: 8787
       # YT_PROXY_PORT: 8101
     volumes:

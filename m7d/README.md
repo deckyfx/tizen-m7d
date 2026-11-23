@@ -28,7 +28,9 @@ docker build -t tizen-m7d m7d/
 The image (`deckyfx/tizen-m7d`, built and pushed by `.github/workflows/docker.yml`) contains the compiled
 binary, apps2samsung-cli (official release, checksum pinned), openssl and zip. Run it with
 `deploy/docker-compose.yml`: **host networking** (TV recognised by source IP; the TV connects back for
-YouTube and setup reports), `/data` and `/home/m7d/.config/Apps2Samsung` as volumes owned by UID 1000.
+YouTube and setup reports), `/data` and `/home/m7d/.config/Apps2Samsung` as volumes. The entrypoint gives
+both folders to UID 1000 (`PUID`/`PGID` to change it) and runs m7d as that user; Docker creates missing
+bind folders as root. Run CLI commands as that user too: `docker exec -it -u m7d tizen-m7d apps2samsung-cli …`.
 The compiled binary keeps identifier names when minifying: Elysia reads handler parameter names.
 
 ## Features

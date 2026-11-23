@@ -33,6 +33,7 @@ RUN apt-get update \
 
 COPY --from=build /src/binaries/m7d-linux-x64 /app/m7d
 COPY --from=a2s /out/apps2samsung-cli /app/apps2samsung-cli
+COPY docker/entrypoint.sh /app/entrypoint.sh
 RUN ln -s /app/apps2samsung-cli /usr/local/bin/apps2samsung-cli
 
 ENV NODE_ENV=production \
@@ -46,7 +47,7 @@ ENV NODE_ENV=production \
 # /data: CA (the TV trusts it), remote pairing token, settings, app lists, setup report.
 # /home/m7d/.config/Apps2Samsung: signing certificates and Apps2Samsung settings.
 VOLUME ["/data", "/home/m7d/.config/Apps2Samsung"]
-USER m7d
 WORKDIR /data
 EXPOSE 8787 8101
-ENTRYPOINT ["/app/m7d"]
+# Starts as root only to fix the volume owners, then runs m7d as UID 1000 (see entrypoint.sh).
+ENTRYPOINT ["/app/entrypoint.sh"]

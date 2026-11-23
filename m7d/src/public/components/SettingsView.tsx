@@ -113,7 +113,7 @@ export function SettingsView({ api, onMessage }: SettingsViewProps) {
               apps2samsung-cli cert --prepare --partner --tv &lt;TV IP&gt;
             </code>{" "}
             on this box (in Docker: prefix it with{" "}
-            <code className="rounded bg-slate-100 px-1 py-0.5">docker exec -it tizen-m7d</code>).
+            <code className="rounded bg-slate-100 px-1 py-0.5">docker exec -it -u m7d tizen-m7d</code>).
           </p>
         </Card>
 

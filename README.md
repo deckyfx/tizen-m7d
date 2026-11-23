@@ -22,7 +22,7 @@ Make a Samsung Tizen TV (built and tested on a **Smart Monitor M7**, Tizen 6.5) 
 1. On the TV: Apps → type `1 2 3 4 5` → Developer mode **On** → **Host PC IP** = this box → restart the TV.
 2. Run `deploy/docker-compose.yml` (set `M7D_TOKEN`; host networking).
 3. Open `http://<this box>:8787` → Settings → TV connection → enter the TV's IP.
-4. Signing certificate for installs: `docker exec -it tizen-m7d apps2samsung-cli cert --prepare --partner --tv <TV IP>`
+4. Signing certificate for installs: `docker exec -it -u m7d tizen-m7d apps2samsung-cli cert --prepare --partner --tv <TV IP>`
    (Samsung sign-in in a browser on the box), or mount an existing `~/.config/Apps2Samsung`.
 
 ## Credits
