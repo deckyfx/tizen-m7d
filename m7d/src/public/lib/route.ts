@@ -10,6 +10,7 @@ export const PAGES = [
   { id: "toolbox", label: "Toolbox", description: "TV information, Developer Mode, install leftovers and package signing." },
   { id: "remote", label: "Remote", description: "A virtual remote control: navigation, volume, media keys and typing." },
   { id: "jobs", label: "Jobs", description: "Installs, updates and clean-ups with their live logs." },
+  { id: "devices", label: "Devices", description: "Browsers that stay signed in: approve new ones, rename or remove them, and choose how long they are remembered." },
   { id: "settings", label: "Settings", description: "TV connection, signing certificates, your app sources and Apps2Samsung logs." },
 ] as const;
 

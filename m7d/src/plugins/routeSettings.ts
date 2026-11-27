@@ -12,5 +12,9 @@ export const settingsPlugin = (settings: SettingsStore) =>
   new Elysia({ prefix: "/settings" })
     .get("/", () => settings.view())
     .put("/", ({ body }) => settings.update(body), {
-      body: t.Object({ tvHost: IpField, homelabIp: IpField }),
+      body: t.Object({
+        tvHost: IpField,
+        homelabIp: IpField,
+        deviceIdleDays: t.Optional(t.Integer({ minimum: 0, maximum: 3650 })),
+      }),
     });

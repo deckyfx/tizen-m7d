@@ -9,7 +9,9 @@ import { NavBar } from "./components/NavBar";
 import { RemoteView } from "./components/RemoteView";
 import { SettingsView } from "./components/SettingsView";
 import { Toast, type ToastMessage } from "./components/Toast";
-import { TokenForm } from "./components/TokenForm";
+import { AccessRequests } from "./components/AccessRequests";
+import { DevicesView } from "./components/DevicesView";
+import { SignInView } from "./components/SignInView";
 import { ToolboxView } from "./components/ToolboxView";
 import { TvBanner } from "./components/TvBanner";
 import { PowerButton, TvStatusBadge, TvStatusCard } from "./components/TvPanel";
@@ -17,6 +19,7 @@ import { Button, ButtonLink, PageHeader } from "./components/ui";
 import { UploadView } from "./components/UploadView";
 import { YouTubeView } from "./components/YouTubeView";
 import { createApi, errorMessage, loadToken, saveToken, type Api } from "./lib/api";
+import { describeUserAgent } from "./lib/browser-name";
 import { applyTvMode, fetchClientInfo, type ClientInfo } from "./lib/client";
 import { registerFonts } from "./lib/fonts";
 import { LayoutContext, type Layout } from "./lib/layout";
@@ -40,44 +43,69 @@ function Brand() {
   );
 }
 
+/** How this page is signed in: the TV's handed-over token, or this browser's device cookie. */
+type Session = { kind: "token"; token: string } | { kind: "cookie" };
+
+/**
+ * Asks the server whether this browser is signed in. A token stored by an older version of the
+ * dashboard is traded once for a remembered-browser cookie, then deleted from the page.
+ */
+async function resumeSession(): Promise<Session | null> {
+  const publicApi = createApi();
+  const me = await publicApi.api.auth.me.get();
+  if (me.data?.signedIn) return { kind: "cookie" };
+  const oldToken = loadToken();
+  if (!oldToken) return null;
+  const traded = await publicApi.api.auth.token.post({
+    token: oldToken,
+    name: describeUserAgent(navigator.userAgent),
+    remember: true,
+  });
+  saveToken("");
+  return traded.error ? null : { kind: "cookie" };
+}
+
 /**
  * Root component: detects whether it runs on the TV (10-foot layout, automatic sign-in),
- * then shows the token gate or the full-width shell (sidebar, header, page).
+ * then shows the sign-in screen or the full-width shell (sidebar, header, page).
  */
 function App() {
   const page = usePage();
   const [client, setClient] = useState<ClientInfo | undefined>(undefined);
-  const [token, setToken] = useState(loadToken);
+  // undefined = still checking, null = signed out.
+  const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [toast, setToast] = useState<ToastMessage | undefined>(undefined);
-  const api = useMemo(() => (token ? createApi(token) : undefined), [token]);
+  const api = useMemo(() => (session ? createApi(session.kind === "token" ? session.token : "") : undefined), [session]);
 
   useEffect(() => {
-    void fetchClientInfo().then((info) => {
+    void fetchClientInfo().then(async (info) => {
       setClient(info);
       applyTvMode(info.isTv);
       // The trusted TV gets the token from the server: no typing with a remote.
       if (info.token) {
         saveToken(info.token);
-        setToken(info.token);
+        setSession({ kind: "token", token: info.token });
+        return;
       }
+      setSession(await resumeSession());
     });
   }, []);
 
   useEffect(() => (client?.isTv ? enableSpatialNavigation() : undefined), [client?.isTv]);
 
   const onMessage = useCallback((text: string, isError = false) => {
-    // A 401 means the remembered token is wrong: forget it and show the prompt again.
+    // A 401 means this browser is no longer signed in (removed, expired): show the sign-in again.
     if (isError && text.startsWith("401")) {
       saveToken("");
-      setToken("");
+      setSession(null);
     }
     setToast({ text, isError, id: Date.now() });
   }, []);
 
-  const signIn = (value: string) => {
-    saveToken(value);
-    setToken(value);
-    setToast(undefined);
+  const signOut = async () => {
+    await createApi().api.auth.logout.post();
+    saveToken("");
+    setSession(null);
   };
 
   const layout: Layout = useMemo(
@@ -88,14 +116,14 @@ function App() {
     [client],
   );
 
-  // Wait for the TV check so the TV never flashes the token prompt.
-  if (!client) return null;
+  // Wait for the TV check and the session check, so nothing flashes the sign-in screen.
+  if (!client || session === undefined) return null;
 
-  if (!api) return <TokenForm onSubmit={signIn} error={toast?.isError ? toast.text : undefined} />;
+  if (!api) return <SignInView onSignedIn={() => setSession({ kind: "cookie" })} />;
 
   return (
     <LayoutContext.Provider value={layout}>
-      <Shell api={api} page={page} client={client} onMessage={onMessage} onSignOut={() => signIn("")} />
+      <Shell api={api} page={page} client={client} onMessage={onMessage} onSignOut={() => void signOut()} />
       <Toast toast={toast} onClose={() => setToast(undefined)} />
     </LayoutContext.Provider>
   );
@@ -161,6 +189,7 @@ function Shell({ api, page, client, onMessage, onSignOut }: ShellProps) {
 
           <main className="flex w-full flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
             {client.isTv && <TvBanner ip={client.ip} />}
+            {page !== "devices" && <AccessRequests api={api} onMessage={onMessage} />}
             <PageHeader
               title={info.label}
               description={info.description}
@@ -206,6 +235,8 @@ function PageContent({ page, api, onMessage }: PageContentProps) {
       return <RemoteView api={api} onMessage={onMessage} />;
     case "jobs":
       return <JobsView api={api} onMessage={onMessage} />;
+    case "devices":
+      return <DevicesView api={api} onMessage={onMessage} />;
     case "settings":
       return <SettingsView api={api} onMessage={onMessage} />;
   }

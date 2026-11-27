@@ -3,6 +3,7 @@ import {
   Gamepad2,
   LayoutGrid,
   ListChecks,
+  MonitorSmartphone,
   MonitorPlay,
   type LucideIcon,
   Settings,
@@ -22,6 +23,7 @@ export const PAGE_ICONS: Record<PageId, LucideIcon> = {
   toolbox: Wrench,
   remote: Gamepad2,
   jobs: ListChecks,
+  devices: MonitorSmartphone,
   settings: Settings,
 };
 

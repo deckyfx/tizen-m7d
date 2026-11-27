@@ -3,21 +3,25 @@ import type { App } from "../../server";
 
 /**
  * Creates the type-safe API client for the server that served this page.
- * Uses `window.location.origin`, so it works from any device/IP on the LAN.
+ * Uses `window.location.origin`, so it works from any device/IP on the LAN. With a token (the TV)
+ * it sends it as a Bearer header; otherwise the remembered-browser cookie signs requests in.
  */
-export function createApi(token: string) {
+export function createApi(token = "") {
   return treaty<App>(window.location.origin, {
     // Keep dates as the strings the API types declare (Eden would turn them into Date objects,
     // which React cannot render: "Objects are not valid as a React child").
     parseDate: false,
-    headers: { authorization: `Bearer ${token}` },
+    headers: token ? { authorization: `Bearer ${token}` } : {},
   });
 }
 
 /** Typed client returned by {@link createApi}. */
 export type Api = ReturnType<typeof createApi>;
 
-/** Key under which the bearer token is remembered in this browser. */
+/**
+ * Key under which the bearer token is kept in this browser: only on the TV (handed over by IP).
+ * PCs and phones use the remembered-browser cookie; an old stored token is traded for one.
+ */
 const TOKEN_KEY = "m7d.token";
 
 /** Reads the remembered token ("" if none or storage is blocked). */
@@ -52,13 +56,12 @@ export function errorMessage(error: { status: unknown; value: unknown }): string
 }
 
 /**
- * Fetches a protected file (signed package, log text) with the stored token.
+ * Fetches a protected file (signed package, log text) with the stored token, or else the cookie.
  * The one place the UI uses fetch directly: Eden cannot hand over raw downloads.
  */
 export async function fetchProtected(path: string): Promise<Response> {
-  return fetch(path, {
-    headers: { authorization: `Bearer ${loadToken()}` },
-  });
+  const token = loadToken();
+  return fetch(path, { headers: token ? { authorization: `Bearer ${token}` } : {} });
 }
 
 /** Downloads a protected file as `filename` in the browser. */

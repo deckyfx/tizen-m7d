@@ -8,6 +8,9 @@ import { apiPlugin } from "./plugins/routeApi";
 import { appPlugin } from "./plugins/routeApp";
 import { AppManager } from "./services/app-manager";
 import { SettingsStore } from "./services/settings-store";
+import { AccessRequests } from "./auth/access-requests";
+import { Auth } from "./auth/auth";
+import { DeviceStore } from "./auth/device-store";
 import { SdbClient } from "./tv/sdb-client";
 import { TvRemoteClient } from "./tv/tv-remote";
 import { TvRestClient } from "./tv/tv-rest";
@@ -76,7 +79,8 @@ const yt = new YtService(
 );
 
 // A new TV IP: drop the connections to the old TV and forget its app list.
-settings.onChange(() => {
+settings.onChange((change) => {
+  if (!change.tvHost) return;
   sdb.release();
   remote.disconnect();
   apps.invalidate();
@@ -90,6 +94,12 @@ await yt.start().catch((error: Error) => console.error(`[yt] not started: ${erro
 
 /** Filled after listen(); lets the API read client IPs without a type cycle on `app`. */
 const httpServer: { current?: { requestIP(request: Request): { address: string } | null } } = {};
+const clientAddress = (request: Request) => httpServer.current?.requestIP(request)?.address;
+
+// Sign-in: the token (scripts, the TV) or remembered browsers (token once, or approval).
+const devices = new DeviceStore(join(envConfig.DATA_DIR, "auth", "devices.json"), () => settings.deviceIdleDays);
+await devices.load();
+const auth = new Auth(envConfig.M7D_TOKEN, devices, new AccessRequests(), clientAddress);
 
 const app = new Elysia({
   serve: {
@@ -107,7 +117,8 @@ const app = new Elysia({
       token: envConfig.M7D_TOKEN,
       settings,
       trustTvIp: envConfig.TRUST_TV_IP,
-      clientAddress: (request) => httpServer.current?.requestIP(request)?.address,
+      clientAddress,
+      auth,
       a2s: { a2s, jobs, uploadDir },
       yt,
     }),

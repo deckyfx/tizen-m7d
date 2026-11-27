@@ -12,11 +12,26 @@ bun install
 bun run dev            # hot reload on :8787 (YouTube proxy on :8101)
 ```
 
-Open `http://<this box>:8787`, enter `M7D_TOKEN` once, then **Settings → TV connection**:
+Open `http://<this box>:8787`, sign in (see below), then **Settings → TV connection**:
 - enter the TV's IP (saved in `.data/settings.json`; `.env` `TV_HOST` is only the default);
 - this box's IP is detected from the route to the TV (override it there or with `HOMELAB_IP`);
 - the card checks Developer Mode and shows how to set the TV's **Host PC IP** to this box
   (Apps → `1 2 3 4 5` → Developer mode On → Host PC IP → restart the TV).
+
+## Sign-in
+
+- **Remembered browsers**: a browser signs in once and is remembered by an HttpOnly cookie
+  (`m7d_device`: SameSite=Strict, Secure over HTTPS). Only a hash of its secret is stored
+  (`.data/auth/devices.json`). It is forgotten after N days unused (Devices page; default 90, 0 = never);
+  without "Remember this browser" it lasts until the browser closes (at most 12 hours).
+- **Getting in**: type `M7D_TOKEN` once (10 wrong tries per address lock it for 10 minutes), or press
+  **Ask for access** and approve the shown code from any signed-in device: the Devices page, or the banner
+  every page shows (the TV too). Requests live 5 minutes, in memory.
+- **Devices page**: approve/deny requests, rename or remove browsers, "Remove all others", the expiry.
+- **The TV's own browser** is handed the token by its IP (`TRUST_TV_IP`), scripts send
+  `Authorization: Bearer <M7D_TOKEN>`. Cookie-authenticated changes must come from the same host.
+- Over plain `http://` the cookie crosses the LAN unencrypted (like the token); through an HTTPS reverse
+  proxy (`X-Forwarded-Proto: https`) it is marked Secure.
 
 ## Build and Docker
 
@@ -101,7 +116,10 @@ m7d :8101  ── only the TV + YT_PROXY_ALLOW ──┐
 
 ## API
 
-All routes except `/api/health` need `Authorization: Bearer <M7D_TOKEN>`.
+Protected routes accept `Authorization: Bearer <M7D_TOKEN>` or a remembered browser's cookie. Public:
+`/api/health`, `/api/client`, `/api/diag`, `/api/auth/me`, `/api/auth/token`, `/api/auth/requests[/:id]`,
+`/api/auth/logout`, `/api/yt/setup-report` (TV IP only). Signed-in: `/api/auth/devices` (GET, PATCH/DELETE
+`/:id`, POST `/remove-others`), `/api/auth/pending` (GET, POST `/:code/approve|deny`), `/api/settings`.
 
 | Method | Path                       | Notes                                               |
 | ------ | -------------------------- | --------------------------------------------------- |

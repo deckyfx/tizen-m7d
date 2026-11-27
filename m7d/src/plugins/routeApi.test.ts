@@ -16,6 +16,9 @@ import { Userscript } from "../yt/userscript";
 import { YoutubeProxy } from "../yt/youtube-proxy";
 import { YtService } from "../yt/yt-service";
 import { SettingsStore } from "../services/settings-store";
+import { AccessRequests } from "../auth/access-requests";
+import { Auth } from "../auth/auth";
+import { DeviceStore } from "../auth/device-store";
 import { apiPlugin } from "./routeApi";
 
 /**
@@ -76,6 +79,7 @@ function startApi() {
         sdb,
         token: TOKEN,
         settings,
+        auth: new Auth(TOKEN, new DeviceStore(join(ytDir, "auth", "devices.json"), () => settings.deviceIdleDays), new AccessRequests(), () => clientIp),
         trustTvIp: true,
         clientAddress: () => clientIp,
         a2s: { a2s, jobs, uploadDir: "/nonexistent/uploads" },
@@ -99,15 +103,22 @@ afterAll(() => {
 });
 
 /** Sends a request with (or without) the bearer token. */
-const call = (method: string, path: string, auth = true, body?: object) =>
+const call = (method: string, path: string, auth = true, body?: object, extra: Record<string, string> = {}) =>
   fetch(`${base}${path}`, {
     method,
     headers: {
       ...(auth ? { authorization: `Bearer ${TOKEN}` } : {}),
       ...(body ? { "content-type": "application/json" } : {}),
+      ...extra,
     },
     body: body ? JSON.stringify(body) : undefined,
   });
+
+/** The `m7d_device=…` pair from a response's Set-Cookie (as a browser would send it back). */
+function deviceCookie(response: Response): string {
+  const header = response.headers.get("set-cookie") ?? "";
+  return header.split(";")[0] ?? "";
+}
 
 describe("api over a real socket", () => {
   test("health is public", async () => {
@@ -224,5 +235,98 @@ describe("api over a real socket", () => {
     expect(status.shim.cobaltArguments).toContain("--proxy=http://127.0.0.1:8101");
     expect(status.ca.hashes.length).toBeGreaterThan(0);
     expect(status.proxy.listening).toBe(false);
+  });
+
+  describe("remembered browsers", () => {
+    test("the token signs a browser in once; its cookie then opens protected routes", async () => {
+      clientIp = "192.0.2.60";
+      expect((await call("POST", "/api/auth/token", false, { token: "wrong", name: "Laptop", remember: true })).status).toBe(401);
+      const signIn = await call("POST", "/api/auth/token", false, { token: TOKEN, name: "Laptop", remember: true });
+      expect(signIn.status).toBe(200);
+      const setCookie = signIn.headers.get("set-cookie") ?? "";
+      expect(setCookie).toContain("HttpOnly");
+      expect(setCookie).toContain("SameSite=Strict");
+      expect(setCookie).toContain("Max-Age=");
+      const cookie = deviceCookie(signIn);
+      expect((await call("GET", "/api/a2s/jobs", false, undefined, { cookie })).status).toBe(200);
+      expect(await (await call("GET", "/api/auth/me", false, undefined, { cookie })).json()).toMatchObject({
+        signedIn: true,
+        via: "device",
+        device: { name: "Laptop", via: "token" },
+      });
+      expect((await call("GET", "/api/a2s/jobs", false, undefined, { cookie: "m7d_device=nope.nope" })).status).toBe(401);
+    });
+
+    test("without 'remember', the cookie lasts only until the browser closes", async () => {
+      const signIn = await call("POST", "/api/auth/token", false, { token: TOKEN, name: "Guest", remember: false });
+      expect(signIn.headers.get("set-cookie")).not.toContain("Max-Age");
+    });
+
+    test("cookie-authenticated changes from another site are refused", async () => {
+      const cookie = deviceCookie(await call("POST", "/api/auth/token", false, { token: TOKEN, name: "Laptop 2", remember: true }));
+      const host = new URL(base).host;
+      const foreign = await call("PUT", "/api/settings", false, { deviceIdleDays: 30 }, { cookie, origin: "http://evil.example" });
+      expect(foreign.status).toBe(403);
+      const own = await call("PUT", "/api/settings", false, { deviceIdleDays: 30 }, { cookie, origin: `http://${host}` });
+      expect(own.status).toBe(200);
+      expect(await own.json()).toMatchObject({ deviceIdleDays: 30 });
+    });
+
+    test("a new browser is let in by approving its code from a signed-in device", async () => {
+      clientIp = "192.0.2.61";
+      const ticket = (await (await call("POST", "/api/auth/requests", false, { name: "Phone", remember: true })).json()) as {
+        requestId: string;
+        code: string;
+      };
+      expect(ticket.code).toMatch(/^[A-Z0-9]{2}-[A-Z0-9]{2}$/);
+      expect(await (await call("GET", `/api/auth/requests/${ticket.requestId}`, false)).json()).toMatchObject({ status: "pending" });
+      // Listing and approving need a signed-in caller.
+      expect((await call("GET", "/api/auth/pending", false)).status).toBe(401);
+      const pending = (await (await call("GET", "/api/auth/pending")).json()) as { code: string; name: string; ip: string }[];
+      expect(pending).toContainEqual(expect.objectContaining({ code: ticket.code, name: "Phone", ip: "192.0.2.61" }));
+      expect((await call("POST", `/api/auth/pending/${ticket.code}/approve`)).status).toBe(200);
+      const granted = await call("GET", `/api/auth/requests/${ticket.requestId}`, false);
+      expect(await granted.json()).toMatchObject({ status: "approved", device: { name: "Phone", via: "approval" } });
+      const cookie = deviceCookie(granted);
+      expect((await call("GET", "/api/a2s/jobs", false, undefined, { cookie })).status).toBe(200);
+      // The grant is handed out once.
+      expect(await (await call("GET", `/api/auth/requests/${ticket.requestId}`, false)).json()).toMatchObject({ status: "expired" });
+    });
+
+    test("a denied request gets no cookie", async () => {
+      clientIp = "192.0.2.62";
+      const ticket = (await (await call("POST", "/api/auth/requests", false, { name: "Unknown", remember: true })).json()) as {
+        requestId: string;
+        code: string;
+      };
+      expect((await call("POST", `/api/auth/pending/${ticket.code}/deny`)).status).toBe(200);
+      const answer = await call("GET", `/api/auth/requests/${ticket.requestId}`, false);
+      expect(await answer.json()).toMatchObject({ status: "denied", device: null });
+      expect(answer.headers.get("set-cookie")).toBeNull();
+    });
+
+    test("the device list marks this browser; removing others and signing out revoke access", async () => {
+      clientIp = "192.0.2.63";
+      const other = deviceCookie(await call("POST", "/api/auth/token", false, { token: TOKEN, name: "Old PC", remember: true }));
+      const mine = deviceCookie(await call("POST", "/api/auth/token", false, { token: TOKEN, name: "This PC", remember: true }));
+      const list = (await (await call("GET", "/api/auth/devices", false, undefined, { cookie: mine })).json()) as {
+        devices: { name: string; current: boolean }[];
+      };
+      expect(list.devices.find((device) => device.current)?.name).toBe("This PC");
+      const host = new URL(base).host;
+      await call("POST", "/api/auth/devices/remove-others", false, undefined, { cookie: mine, origin: `http://${host}` });
+      expect((await call("GET", "/api/a2s/jobs", false, undefined, { cookie: other })).status).toBe(401);
+      expect((await call("GET", "/api/a2s/jobs", false, undefined, { cookie: mine })).status).toBe(200);
+      const out = await call("POST", "/api/auth/logout", false, undefined, { cookie: mine });
+      expect(out.headers.get("set-cookie")).toContain("Max-Age=0");
+      expect((await call("GET", "/api/a2s/jobs", false, undefined, { cookie: mine })).status).toBe(401);
+    });
+
+    test("ten wrong tokens lock token sign-in for that address", async () => {
+      clientIp = "192.0.2.64";
+      for (let i = 0; i < 10; i++) await call("POST", "/api/auth/token", false, { token: "guess", name: "x", remember: true });
+      const locked = await call("POST", "/api/auth/token", false, { token: TOKEN, name: "x", remember: true });
+      expect(locked.status).toBe(429);
+    });
   });
 });

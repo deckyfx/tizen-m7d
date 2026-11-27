@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import packageJson from "../../package.json";
 import { detectClient } from "../lib/client-detect";
 import { DIAG_PAGE_HTML } from "./diag-page";
 import { a2sPlugin, type A2sDeps } from "./routeA2s";
@@ -25,6 +25,8 @@ import type { TvRestClient } from "../tv/tv-rest";
 import type { YtService } from "../yt/yt-service";
 import type { SettingsStore } from "../services/settings-store";
 import { settingsPlugin } from "./routeSettings";
+import type { Auth } from "../auth/auth";
+import { authAdminPlugin, authPublicPlugin } from "./routeAuth";
 
 /** Services the API routes need (injected by `server.ts`). */
 export interface ApiDeps {
@@ -32,8 +34,10 @@ export interface ApiDeps {
   rest: TvRestClient;
   remote: TvRemoteClient;
   sdb: SdbClient;
-  /** Bearer token required by protected routes. */
+  /** The token handed to the trusted TV (sign-in itself goes through `auth`). */
   token: string;
+  /** Token and remembered-browser sign-in. */
+  auth: Auth;
   /** The TV (its IP recognises the TV's own browser) and the settings page's store. */
   settings: SettingsStore;
   /** Give the token to requests from the TV's IP (no typing on the TV). */
@@ -52,15 +56,6 @@ interface TvBrowserSighting {
   seenAt: string;
   /** Feature report posted by the `/api/diag` page, if it ran on the TV. */
   features: Record<string, string | number | boolean> | null;
-}
-
-/** Constant-time check of an `Authorization: Bearer <token>` header. */
-function isAuthorized(header: string | undefined, token: string): boolean {
-  const presented = Buffer.from(header?.replace(/^Bearer\s+/i, "") ?? "");
-  const expected = Buffer.from(token);
-  return (
-    presented.length === expected.length && timingSafeEqual(presented, expected)
-  );
 }
 
 /** Status-only state of the TV when its REST API does not answer. */
@@ -135,7 +130,7 @@ export const apiPlugin = (deps: ApiDeps) => {
           return undefined;
       }
     })
-    .get("/health", () => ({ ok: true as const, service: "m7d" }))
+    .get("/health", () => ({ ok: true as const, service: "m7d", version: packageJson.version }))
     // Public, script-light diagnostics page: works on any engine, records the TV's browser.
     .get("/diag", ({ request, headers }) => {
       const userAgent = headers["user-agent"] ?? "";
@@ -185,14 +180,19 @@ export const apiPlugin = (deps: ApiDeps) => {
       };
     })
     .use(ytReportPlugin({ yt: deps.yt, target: deps.settings, clientAddress: deps.clientAddress }))
+    .use(authPublicPlugin(deps.auth))
     .guard(
       {
-        beforeHandle({ headers, status }) {
-          if (!isAuthorized(headers.authorization, deps.token)) {
-            return status(401, {
-              error: "Missing or wrong token",
-              kind: "Unauthorized",
-            });
+        // Bearer token (scripts, the TV) or a remembered browser's cookie.
+        async beforeHandle({ request, set, status }) {
+          const who = await deps.auth.identify(request, (cookie) => {
+            set.headers["set-cookie"] = cookie;
+          });
+          if (who.kind === "none") {
+            return status(401, { error: "Not signed in", kind: "Unauthorized" });
+          }
+          if (who.kind === "device" && !deps.auth.sameOrigin(request)) {
+            return status(403, { error: "Cross-site request refused", kind: "Forbidden" });
           }
         },
       },
@@ -267,6 +267,7 @@ export const apiPlugin = (deps: ApiDeps) => {
           )
           .use(a2sPlugin(deps.a2s))
           .use(ytPlugin(deps.yt))
-          .use(settingsPlugin(deps.settings)),
+          .use(settingsPlugin(deps.settings))
+          .use(authAdminPlugin(deps.auth, deps.settings)),
     );
 };
